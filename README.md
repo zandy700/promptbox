@@ -19,6 +19,7 @@ A floating window that lives in the corner of your screen and reformats rough pr
 - [Configuration](#configuration)
 - [How it works](#how-it-works)
 - [Platform notes](#platform-notes)
+- [Troubleshooting](#troubleshooting)
 
 ---
 
@@ -227,6 +228,31 @@ The system prompts enforce specific rules: keep every number, file name, and err
 | Fonts | SF Pro / SF Mono | Segoe UI / Cascadia Mono |
 
 > **Games in exclusive full-screen mode** can't be overlaid on either platform — this is a system-level restriction, not a Prompt Box limitation.
+
+---
+
+## Troubleshooting
+
+### "Rate limit hit" / spinner keeps going
+
+Free-tier APIs cap how many requests you can make per minute. When this happens, Prompt Box automatically waits 65 seconds and retries — the spinner stays up during the wait, you don't need to do anything.
+
+If you hit this often, switch to **Groq** (⚙ → Groq → save your key). Groq's free tier has much higher rate limits and Llama 70B produces clean structured output.
+
+| Provider | Free rate limit |
+|---|---|
+| Google AI Studio | ~15 req/min (Gemini Flash), ~2 req/min (Gemini Pro) |
+| Groq | ~30 req/min (Llama 8B), ~30 req/min (Llama 70B) |
+| NVIDIA | varies by model |
+| OpenRouter | varies by model (`:free` models are shared) |
+
+### "API key rejected"
+
+The key was saved but the provider is returning 401. Re-open Settings, delete the key, paste it again, and save. Keys occasionally get invalidated by the provider — generate a new one from the provider's dashboard if it keeps failing.
+
+### Window doesn't float above full-screen apps (macOS)
+
+Make sure you launched `promptbox.py` directly (or via the `.app` bundle) and granted it Accessibility access when prompted. The floating NSPanel requires macOS 13 or later.
 
 ---
 
