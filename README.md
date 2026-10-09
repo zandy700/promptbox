@@ -161,6 +161,19 @@ For any OpenAI-compatible API (Ollama, LM Studio, local llama.cpp server, etc.):
 
 > Keys are stored in macOS Keychain or Windows Credential Manager — never in plain text or config files.
 
+### Rate limits on free tiers
+
+Free APIs cap requests per minute. If you hit the limit, Prompt Box waits 65 seconds and retries automatically — the spinner stays up, you don't need to do anything.
+
+If it happens often, switch to **Groq** — same free tier, much higher limits, and Llama 70B is good at structuring prompts.
+
+| Provider | Free rate limit |
+|---|---|
+| Google AI Studio | ~15 req/min (Gemini Flash), ~2 req/min (Gemini Pro) |
+| Groq | ~30 req/min (Llama 8B / Llama 70B) |
+| OpenRouter | varies by model (`:free` models are shared) |
+| NVIDIA | varies by model |
+
 ---
 
 ## Usage
@@ -232,19 +245,6 @@ The system prompts enforce specific rules: keep every number, file name, and err
 ---
 
 ## Troubleshooting
-
-### "Rate limit hit" / spinner keeps going
-
-Free-tier APIs cap how many requests you can make per minute. When this happens, Prompt Box automatically waits 65 seconds and retries — the spinner stays up during the wait, you don't need to do anything.
-
-If you hit this often, switch to **Groq** (⚙ → Groq → save your key). Groq's free tier has much higher rate limits and Llama 70B produces clean structured output.
-
-| Provider | Free rate limit |
-|---|---|
-| Google AI Studio | ~15 req/min (Gemini Flash), ~2 req/min (Gemini Pro) |
-| Groq | ~30 req/min (Llama 8B), ~30 req/min (Llama 70B) |
-| NVIDIA | varies by model |
-| OpenRouter | varies by model (`:free` models are shared) |
 
 ### "API key rejected"
 
