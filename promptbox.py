@@ -15,7 +15,7 @@ macOS:   ~/Applications/Prompt Box.app, or run this file.  Needs: pip install py
 Windows: double-click promptbox_windows.cmd (installs pywebview, keyring, pyperclip on first run).
 Self-check: promptbox.py --selftest
 """
-import os, re, subprocess, sys, json, urllib.error, urllib.request, webbrowser
+import os, re, subprocess, sys, json, time, urllib.error, urllib.request, webbrowser
 from datetime import datetime
 from pathlib import Path
 
@@ -157,20 +157,26 @@ def convert(prompt, tier="fast", instructions=STRUCTURE):
     req = urllib.request.Request(p["base"].rstrip("/") + "/chat/completions",
                                  data=json.dumps(body).encode(), headers={
         "Authorization": f"Bearer {key}", "Content-Type": "application/json"})
-    try:
-        with urllib.request.urlopen(req, timeout=120) as resp:
-            text = json.load(resp)["choices"][0]["message"]["content"] or ""
-    except urllib.error.HTTPError as e:
-        detail = e.read().decode(errors="replace")[:200]
-        msg = {401: f"{name} rejected the key. Check it in Settings.",
-               403: f"{name} refused the request. The key may lack access to `{model}`.",
-               404: f"{name} doesn't know the model `{model}`. Fix the model name in Settings.",
-               429: f"{name} rate limit hit. Wait a minute and convert again."}.get(e.code)
-        raise RuntimeError(msg or f"{name} API error {e.code}: {detail}")
-    except urllib.error.URLError as e:
-        raise RuntimeError(f"Can't reach {name} ({e.reason}). Check your internet connection.")
-    except (KeyError, IndexError, ValueError):
-        raise RuntimeError(f"{name} sent back a response Prompt Box couldn't read.")
+    text = ""
+    for attempt in range(2):
+        try:
+            with urllib.request.urlopen(req, timeout=120) as resp:
+                text = json.load(resp)["choices"][0]["message"]["content"] or ""
+            break
+        except urllib.error.HTTPError as e:
+            detail = e.read().decode(errors="replace")[:200]
+            if e.code == 429 and attempt == 0:
+                time.sleep(65)  # free-tier rate limits reset per minute
+                continue
+            msg = {401: f"{name} rejected the key. Check it in Settings.",
+                   403: f"{name} refused the request. The key may lack access to `{model}`.",
+                   404: f"{name} doesn't know the model `{model}`. Fix the model name in Settings.",
+                   429: f"{name} rate limit hit. Wait a minute and convert again."}.get(e.code)
+            raise RuntimeError(msg or f"{name} API error {e.code}: {detail}")
+        except urllib.error.URLError as e:
+            raise RuntimeError(f"Can't reach {name} ({e.reason}). Check your internet connection.")
+        except (KeyError, IndexError, ValueError):
+            raise RuntimeError(f"{name} sent back a response Prompt Box couldn't read.")
     # reasoning models sometimes prepend a <think> block
     return re.sub(r"<think>.*?</think>", "", text, flags=re.S).strip()
 
