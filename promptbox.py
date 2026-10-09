@@ -16,6 +16,8 @@ Windows: double-click promptbox_windows.cmd (installs pywebview, keyring, pyperc
 Self-check: promptbox.py --selftest
 """
 import os, re, subprocess, sys, json, time, urllib.error, urllib.request, webbrowser
+from urllib.parse import urlsplit
+from uuid import uuid4
 from datetime import datetime
 from pathlib import Path
 
@@ -31,13 +33,10 @@ CONFIG = APP_DIR / "config.json"
 PROVIDERS = {
     "nvidia": {"name": "NVIDIA", "base": "https://integrate.api.nvidia.com/v1",
                "keys": "https://build.nvidia.com", "service": "nvidia-api",
-               "fast": "nvidia/nemotron-3.5-lightning-30b-a3b", "careful": "nvidia/nemotron-3-super-120b-a12b"},
-    "google": {"name": "Google AI Studio", "base": "https://generativelanguage.googleapis.com/v1beta/openai",
-               "keys": "https://aistudio.google.com/apikey",
-               "fast": "gemini-flash-latest", "careful": "gemini-pro-latest"},
+               "fast": "meta/llama-3.1-8b-instruct", "careful": "meta/llama-3.3-70b-instruct"},
     "openrouter": {"name": "OpenRouter", "base": "https://openrouter.ai/api/v1",
                    "keys": "https://openrouter.ai/keys",
-                   "fast": "nvidia/nemotron-3.5-lightning:free", "careful": "nvidia/nemotron-3-super-120b-a12b:free"},
+                   "fast": "meta/llama-3.1-8b-instruct:free", "careful": "meta/llama-3.3-70b-instruct:free"},
     "groq": {"name": "Groq", "base": "https://api.groq.com/openai/v1",
              "keys": "https://console.groq.com/keys",
              "fast": "llama-3.1-8b-instant", "careful": "llama-3.3-70b-versatile"},
@@ -47,69 +46,70 @@ PROVIDERS = {
                "fast": "gpt-5-mini", "careful": "gpt-5"},
     "custom": {"name": "Custom", "base": "", "keys": "", "fast": "", "careful": ""},
 }
-STRUCTURE = """Restructure the user's prompt for a coding agent into Markdown.
+# Earlier built-in defaults may still be stored as user model edits. Treat only
+# these exact old defaults as stale; leave every other saved model untouched.
+OLD_NVIDIA_DEFAULTS = {"fast": "nvidia/nemotron-3.5-lightning-30b-a3b",
+                       "careful": "nvidia/nemotron-3-super-120b-a12b"}
+COMMON_RULES = """Edit the user's text into a prompt. Return only the rewritten prompt. Do not copy these editing directions into the result.
+Preserve the user's requirements, exclusions, uncertainty, numbers, units, names, paths, commands, and code exactly. Keep pasted code/logs in fenced blocks. Do not turn a tentative idea into a decision. Remove only filler and repetition."""
 
-Sections, in this order, each ONLY if it has content (never write an empty section):
-## Goal: one or two lines.
-## Context: background the agent needs.
-## Constraints: bullets.
-## Out of scope: everything the user said NOT to do or touch.
-## Done when: bullets, each a checkable outcome (a command passes, a file exists, something is visible).
-## Open questions: anything vague or ambiguous. List it here; do not guess an answer.
+STRUCTURE = COMMON_RULES + """
+Structure mode: Reorganize only the user's content. Use these headings only when needed: ## Goal, ## Context, ## Constraints, ## Out of scope, ## Done when, ## Open questions.
+Put each requirement in one section. Constraints must come from the user's text. Put exclusions in Out of scope and unresolved choices in Open questions. Add Done when only for checks the user actually stated. Do not add advice, instructions, tools, or steps."""
 
-Rules:
-- Keep every requirement, number, file name, command, and error text verbatim.
-- Never add requirements, tools, or steps the user did not ask for.
-- Delete filler: greetings, politeness, hedging ("I think", "maybe"), and repetition.
-- Delete generic advice the agent already follows ("write clean code", "make sure it works").
-- Terse bullets, not full sentences. One requirement per bullet.
-- Wrap file paths, commands, and code identifiers in `backticks`.
-- Put pasted code, logs, and stack traces in fenced code blocks, unchanged. Do not summarize them.
-- The result must not be longer than the original, apart from headings.
-- Output only the Markdown, with no preamble and no closing remarks."""
-
-BUILD = """Turn the user's description of something they want built into an execution prompt that a coding agent can carry out without asking follow-up questions.
-
-Sections, in this order, each ONLY if it has content (never write an empty section):
-## Goal: one line: what to build.
-## Features: one `###` subheading per feature, then what it does, then an indented "Acceptance:" list of checkable bullets.
-## Design: every visual detail the user gave (colors, fonts, layout, mood), values exactly as given.
-## Tech: stack, platform, files, and libraries the user named.
-## Steps: numbered build order, smallest working version first; each step ends in something runnable or visible.
-## Out of scope: everything the user said not to do.
-## Done when: checkable outcomes for the whole build.
-## Assumptions: every decision you made that the user did not state (a library, a layout, a value, a default). One bullet each, phrased as a decision the agent should follow.
-## Open questions: only things that block building and cannot be given a sensible default.
-
-Rules:
-- Keep every name, number, color, file, and requirement from the user verbatim.
-- You may infer acceptance criteria and steps. Any new decision goes in Assumptions, never silently into Features, Design, or Tech.
-- Prefer the simplest approach that meets the description. Do not add features the user did not describe.
-- Terse bullets. Wrap files, commands, identifiers, and color values in `backticks`.
-- Output only the Markdown, with no preamble and no closing remarks."""
+BUILD = COMMON_RULES + """
+Turn the description into a minimal execution prompt. Use these ## headings in order where useful:
+Goal; Features (### per feature, with acceptance checks); Design; Tech; Steps (smallest working version first); Out of scope; Done when; Assumptions; Open questions.
+Infer only necessary steps and checks. Put every unstated decision exclusively in Assumptions as a proposal for review, never as an approved requirement. Put blocking unknowns in Open questions. Do not invent a stack, visual values, or scope to fill headings."""
 
 MODES = {"structure": STRUCTURE, "build": BUILD}
+
+
+def leaked_instructions(original, md, instructions):
+    """Catch copied editing directions before treating a conversion as usable."""
+    legacy_markers = ("output only concise markdown", "remove only repetition and conversational filler",
+                      "never trade fidelity for brevity", "omit empty sections",
+                      "aim for no expansion beyond headings", "done when (stated checkable outcomes)")
+    if any(marker in md.lower() and marker not in original.lower() for marker in legacy_markers):
+        return True
+    words = lambda s: re.findall(r"[a-z0-9]+", s.lower())
+    source, result, user = (words(s) for s in (instructions, md, original))
+    source_phrases = {tuple(source[i:i + 5]) for i in range(len(source) - 4)}
+    user_phrases = {tuple(user[i:i + 5]) for i in range(len(user) - 4)}
+    return any(tuple(result[i:i + 5]) in source_phrases - user_phrases
+               for i in range(len(result) - 4))
 
 
 # ---------- settings + keys ----------
 
 def load_config():
     try:
-        return json.loads(CONFIG.read_text())
+        cfg = json.loads(CONFIG.read_text(encoding="utf-8"))
     except (OSError, ValueError):
-        return {"provider": "nvidia", "models": {}, "custom_base": ""}
+        cfg = {}
+    if not isinstance(cfg, dict):
+        cfg = {}
+    if cfg.get("provider") not in PROVIDERS:
+        cfg["provider"] = "nvidia"
+    if not isinstance(cfg.get("models"), dict):
+        cfg["models"] = {}
+    return cfg
 
 
 def save_config(cfg):
     CONFIG.parent.mkdir(parents=True, exist_ok=True)
-    CONFIG.write_text(json.dumps(cfg, indent=2))
+    CONFIG.write_text(json.dumps(cfg, indent=2), encoding="utf-8")
 
 
 def provider_settings(pid, cfg=None):
     """Preset merged with the user's edits."""
-    cfg = cfg or load_config()
+    cfg = load_config() if cfg is None else cfg
     p = dict(PROVIDERS[pid], id=pid)
-    p.update({k: v for k, v in cfg.get("models", {}).get(pid, {}).items() if v})
+    edits = cfg.get("models", {}).get(pid, {})
+    if isinstance(edits, dict):
+        p.update({k: v.strip() for k, v in edits.items()
+                  if k in ("fast", "careful") and isinstance(v, str) and v.strip()
+                  and not (pid == "nvidia" and v.strip() == OLD_NVIDIA_DEFAULTS[k])})
     if pid == "custom":
         p["base"] = cfg.get("custom_base", "")
     p.setdefault("service", f"promptbox-{pid}")
@@ -142,43 +142,86 @@ def set_key(service, key):
 
 # ---------- conversion ----------
 
-def convert(prompt, tier="fast", instructions=STRUCTURE):
+class IncompleteResponse(RuntimeError):
+    def __init__(self, message, usage, model):
+        super().__init__(message)
+        self.usage = usage
+        self.model = model
+
+
+def reported_usage(result):
+    raw = result.get("usage")
+    return {k: v for k, v in (raw.items() if isinstance(raw, dict) else [])
+            if k in ("prompt_tokens", "completion_tokens", "total_tokens")
+            and type(v) is int and v >= 0}
+
+def validate_base(base):
+    url = urlsplit(base)
+    local = url.hostname in ("localhost", "127.0.0.1", "::1")
+    if (not url.hostname or url.username or url.password or url.query or url.fragment
+            or not (url.scheme == "https" or (url.scheme == "http" and local))):
+        raise ValueError("Use an HTTPS base URL, or HTTP on localhost for a local model; no credentials, query, or fragment.")
+    return base.rstrip("/")
+
+
+def convert(prompt, tier="fast", instructions=STRUCTURE, *, with_usage=False):
+    if not isinstance(prompt, str) or not prompt.strip():
+        raise ValueError("Paste a prompt first.")
+    if tier not in ("fast", "careful"):
+        raise ValueError("Unknown model tier.")
     p = provider_settings(load_config().get("provider", "nvidia"))
     key, model, name = get_key(p["service"]), p.get(tier) or p.get("fast"), p["name"]
-    if not key:
+    if not key and p["id"] != "custom":
         raise RuntimeError(f"No {name} API key yet. Open Settings to add one.")
     if not p["base"] or not model:
         raise RuntimeError(f"{name} needs a base URL and model name. Open Settings to fill them in.")
+    base = validate_base(p["base"])
     body = {"model": model,
             "messages": [{"role": "system", "content": instructions},
                          {"role": "user", "content": prompt}]}
     if not p.get("plain"):
-        body.update(temperature=0, max_tokens=4096)
-    req = urllib.request.Request(p["base"].rstrip("/") + "/chat/completions",
-                                 data=json.dumps(body).encode(), headers={
-        "Authorization": f"Bearer {key}", "Content-Type": "application/json"})
-    text = ""
-    for attempt in range(2):
-        try:
-            with urllib.request.urlopen(req, timeout=120) as resp:
-                text = json.load(resp)["choices"][0]["message"]["content"] or ""
-            break
-        except urllib.error.HTTPError as e:
-            detail = e.read().decode(errors="replace")[:200]
-            if e.code == 429 and attempt == 0:
-                time.sleep(65)  # free-tier rate limits reset per minute
-                continue
-            msg = {401: f"{name} rejected the key. Check it in Settings.",
-                   403: f"{name} refused the request. The key may lack access to `{model}`.",
-                   404: f"{name} doesn't know the model `{model}`. Fix the model name in Settings.",
-                   429: f"{name} rate limit hit. Wait a minute and convert again."}.get(e.code)
-            raise RuntimeError(msg or f"{name} API error {e.code}: {detail}")
-        except urllib.error.URLError as e:
-            raise RuntimeError(f"Can't reach {name} ({e.reason}). Check your internet connection.")
-        except (KeyError, IndexError, ValueError):
-            raise RuntimeError(f"{name} sent back a response Prompt Box couldn't read.")
+        # Structure should stay near the input length. A smaller ceiling stops
+        # runaway generations sooner; the response is rejected if truncated.
+        limit = min(4096, max(512, len(prompt) * 2)) if instructions == STRUCTURE else 4096
+        body.update(temperature=0, max_tokens=limit)
+    headers = {"Content-Type": "application/json"}
+    if key:
+        headers["Authorization"] = f"Bearer {key}"
+    req = urllib.request.Request(base + "/chat/completions",
+                                 data=json.dumps(body).encode(), headers=headers)
+    try:
+        with urllib.request.urlopen(req, timeout=120) as resp:
+            result = json.load(resp)
+        choice = result["choices"][0]
+        if choice.get("finish_reason") not in (None, "stop"):
+            reason = choice["finish_reason"]
+            message = (f"{name} hit the output limit (length). Nothing saved. Try another model."
+                       if reason == "length" else
+                       f"{name} stopped before finishing ({reason}). Nothing saved.")
+            raise IncompleteResponse(
+                message, reported_usage(result), model)
+        text = choice["message"]["content"]
+        if not isinstance(text, str):
+            raise ValueError("No text content")
+    except urllib.error.HTTPError as e:
+        retry = e.headers.get("Retry-After") if e.headers else None
+        wait = f" Retry after {retry}." if retry else " Try again later."
+        e.close()
+        msg = {401: f"{name} rejected the key. Check it in Settings.",
+               403: f"{name} refused access to `{model}`.",
+               404: f"{name} doesn't know the model `{model}`. Check Settings.",
+               429: f"{name} rate limit hit.{wait} No automatic retry."}.get(e.code)
+        raise RuntimeError(msg or f"{name} API error {e.code}.") from e
+    except (urllib.error.URLError, TimeoutError) as e:
+        raise RuntimeError(f"Can't reach {name}. Check your connection and try again.") from e
+    except (KeyError, IndexError, ValueError, TypeError, AttributeError) as e:
+        raise RuntimeError(f"{name} sent back a response Prompt Box couldn't read.") from e
     # reasoning models sometimes prepend a <think> block
-    return re.sub(r"<think>.*?</think>", "", text, flags=re.S).strip()
+    text = re.sub(r"\A\s*<think>.*?</think>\s*", "", text, count=1, flags=re.S).strip()
+    if not text or text.startswith("<think>"):
+        raise RuntimeError(f"{name} returned no usable text. Nothing saved.")
+    usage = reported_usage(result)
+    return {"md": text, "usage": usage, "model": model} if with_usage else text
 
 
 # ---------- detail check: hard facts in the original that must survive ----------
@@ -203,16 +246,18 @@ def extract_details(text):
         for m in re.finditer(pat, text):
             item = m.group(1).strip().rstrip(".,;:")
             # skip pieces of something already listed (main.py inside src/cli/main.py)
-            if item and not any(_has(o, item) for o in out):
+            if item and not any(_has(o, item) or (not item[0].isdigit() and item in o) for o in out):
                 out.append(item)
     return out
 
 
 def _has(md, item):
     # digits get digit-only boundaries so "30" matches "30s" but not "300"
-    left = r"(?<![\d.])" if item[0].isdigit() else r"(?<!\w)"
-    right = r"(?!\d)" if item[-1].isdigit() else r"(?!\w)"
-    return bool(re.search(left + re.escape(item) + right, md, re.I))
+    numeric = item[0].isdigit()
+    left = r"(?<![\w.])" if numeric else r"(?<![\w/.-])"
+    right = r"(?!\d|[.,:]\d)" if numeric else r"(?![\w/-]|\.[\w])"
+    flags = re.I if re.fullmatch(r"#[0-9A-Fa-f]{3}(?:[0-9A-Fa-f]{3})?", item) else 0
+    return bool(re.search(left + re.escape(item) + right, md, flags))
 
 
 def check_details(original, md):
@@ -224,9 +269,9 @@ def check_details(original, md):
 
 def save(original, md):
     SAVE_DIR.mkdir(parents=True, exist_ok=True)
-    stamp = f"{datetime.now():%Y-%m-%d_%H%M%S}"
-    (SAVE_DIR / f"{stamp}.md").write_text(md + "\n")
-    (SAVE_DIR / f"{stamp}.original.txt").write_text(original + "\n")
+    stamp = f"{datetime.now():%Y-%m-%d_%H%M%S_%f}_{uuid4().hex[:8]}"
+    (SAVE_DIR / f"{stamp}.md").write_text(md + "\n", encoding="utf-8")
+    (SAVE_DIR / f"{stamp}.original.txt").write_text(original + "\n", encoding="utf-8")
     return stamp
 
 
@@ -246,16 +291,16 @@ def history(limit=60):
             when = datetime.strptime(p.stem, "%Y-%m-%d_%H%M%S").isoformat()
         except ValueError:
             when = datetime.fromtimestamp(p.stat().st_mtime).isoformat()
-        items.append({"id": p.stem, "title": _title(p.read_text()), "when": when})
+        items.append({"id": p.stem, "title": _title(p.read_text(encoding="utf-8")), "when": when})
     return items
 
 
 def load(stamp):
     if not re.fullmatch(r"[\w.-]+", stamp):
         raise ValueError("bad id")
-    md = (SAVE_DIR / f"{stamp}.md").read_text().strip()
+    md = (SAVE_DIR / f"{stamp}.md").read_text(encoding="utf-8").strip()
     orig_path = SAVE_DIR / f"{stamp}.original.txt"
-    original = orig_path.read_text().strip() if orig_path.exists() else ""
+    original = orig_path.read_text(encoding="utf-8").strip() if orig_path.exists() else ""
     return {"original": original, "md": md, "details": check_details(original, md) if original else []}
 
 
@@ -267,7 +312,7 @@ class Api:
 
     def status(self):
         p = provider_settings(load_config().get("provider", "nvidia"))
-        return {"has_key": get_key(p["service"]) is not None, "provider": p["name"],
+        return {"has_key": get_key(p["service"]) is not None or p["id"] == "custom", "provider": p["name"],
                 "fast": p.get("fast", ""), "careful": p.get("careful", "")}
 
     def providers(self):
@@ -284,17 +329,19 @@ class Api:
         try:
             if pid not in PROVIDERS:
                 raise ValueError("Unknown provider")
+            if pid == "custom":
+                base = validate_base(base.strip())
+                if not fast.strip():
+                    raise ValueError("Custom needs a Fast model name.")
             p = provider_settings(pid)
             if key.strip():
                 set_key(p["service"], key)
-            elif not get_key(p["service"]):
+            elif pid != "custom" and not get_key(p["service"]):
                 raise ValueError(f"Paste your {p['name']} API key first.")
             cfg = load_config()
             cfg["provider"] = pid
             cfg.setdefault("models", {})[pid] = {"fast": fast.strip(), "careful": careful.strip()}
             if pid == "custom":
-                if not re.match(r"https?://", base.strip()):
-                    raise ValueError("Base URL must start with https://")
                 cfg["custom_base"] = base.strip()
             save_config(cfg)
             return {"ok": True}
@@ -302,11 +349,31 @@ class Api:
             return {"ok": False, "error": str(e)}
 
     def convert(self, prompt, tier="fast", mode="structure"):
+        started = time.monotonic()
         try:
-            md = convert(prompt, tier, MODES.get(mode, STRUCTURE))
-            return {"ok": True, "md": md, "id": save(prompt, md), "details": check_details(prompt, md)}
+            if mode not in MODES:
+                raise ValueError("Unknown conversion mode.")
+            result = convert(prompt, tier, MODES[mode], with_usage=True)
+            md = result["md"]
+            if leaked_instructions(prompt, md, MODES[mode]):
+                return {"ok": False,
+                        "error": "The model copied Prompt Box's editing directions into the result. Nothing saved. Use the original prompt or try a different model after checking Settings.",
+                        "usage": result["usage"], "model": result["model"],
+                        "elapsed_seconds": round(time.monotonic() - started, 1)}
+            # A disk failure must not discard a successful (possibly paid) response.
+            result.update(ok=True, id=None, details=check_details(prompt, md))
+            try:
+                result["id"] = save(prompt, md)
+            except OSError:
+                result["warning"] = "Converted, but history could not be saved. Copy the result before closing."
+            result["elapsed_seconds"] = round(time.monotonic() - started, 1)
+            return result
         except Exception as e:
-            return {"ok": False, "error": str(e)}
+            error = {"ok": False, "error": str(e),
+                     "elapsed_seconds": round(time.monotonic() - started, 1)}
+            if isinstance(e, IncompleteResponse):
+                error.update(usage=e.usage, model=e.model)
+            return error
 
     def check(self, original, md):
         return check_details(original, md)
@@ -484,11 +551,11 @@ def _selftest():
     d = extract_details("Background #0F172A, accent #fff, 2 pages")
     assert d == ["#0F172A", "#fff", "2"], d   # hex is one detail, not the number 0
     assert check_details("bg #0F172A", "- Background `#0f172a`")[0]["kept"]
-    cfg = {"provider": "google", "models": {"google": {"fast": "my-model", "careful": ""}},
+    cfg = {"provider": "groq", "models": {"groq": {"fast": "my-model", "careful": ""}},
            "custom_base": "https://x.test/v1"}
-    g = provider_settings("google", cfg)
-    assert g["fast"] == "my-model" and g["careful"] == PROVIDERS["google"]["careful"], g  # blank edit keeps default
-    assert g["service"] == "promptbox-google" and provider_settings("nvidia", cfg)["service"] == "nvidia-api"
+    g = provider_settings("groq", cfg)
+    assert g["fast"] == "my-model" and g["careful"] == PROVIDERS["groq"]["careful"], g  # blank edit keeps default
+    assert g["service"] == "promptbox-groq" and provider_settings("nvidia", cfg)["service"] == "nvidia-api"
     assert provider_settings("custom", cfg)["base"] == "https://x.test/v1"
     assert _title("## Goal\nMake `x` faster\n\n## Done when\n- ok") == "Make x faster"
     pw, ph = SIZES["panel"]  # Windows: panel pinned above a 40px taskbar on 1920x1080

@@ -2,7 +2,7 @@
 
 **Paste a messy prompt. Get a structured one back.**
 
-A floating window that lives in the corner of your screen and reformats rough prompts into clean Markdown that coding agents (Claude, ChatGPT, Cursor, etc.) understand better. Works over every app — including full-screen terminals.
+A floating window that lives in the corner of your screen and reformats rough prompts into Markdown you can review before sending to coding agents (Claude, ChatGPT, Cursor, etc.). Works over every app — including full-screen terminals.
 
 <img src="promptbox.png" width="80" alt="Prompt Box icon" />
 
@@ -25,7 +25,7 @@ A floating window that lives in the corner of your screen and reformats rough pr
 
 ## Why
 
-Coding agents read prompts better when requirements are split into labeled sections (`Goal`, `Constraints`, `Done when`). Writing that structure by hand every time is friction. Prompt Box does it in one keypress, before you send.
+Labeled sections (`Goal`, `Constraints`, `Done when`) can make requirements easier to review. Prompt Box drafts that structure in one keypress. The result still needs review: an LLM can omit constraints or change meaning.
 
 ---
 
@@ -79,20 +79,19 @@ Bar chart of completions for the last 7 days.
 
 - **Floats above everything** — appears over full-screen terminals, Claude, ChatGPT desktop, VS Code. macOS uses an NSPanel; Windows uses an always-on-top overlay.
 - **Three sizes** — orb (56×56 bubble), panel (320×460 corner), full (1180×760 workspace)
-- **Fidelity check** — after conversion, highlights any numbers, file paths, hex colors, or flags from your original that didn't survive into the output
+- **Literal detail check** — highlights missing numbers, file paths, hex colors, or flags. Case-sensitive for identifiers and paths. This is a heuristic, not proof that meaning or every requirement survived
 - **History sidebar** — every conversion saved locally as `<timestamp>.md` + `<timestamp>.original.txt`
-- **Six API providers** — all free-tier friendly, all OpenAI-compatible:
+- **Five API providers** — OpenAI-compatible; availability, pricing, and limits depend on the provider:
 
 | Provider | Get a key |
 |---|---|
 | NVIDIA | [build.nvidia.com](https://build.nvidia.com) |
-| Google AI Studio | [aistudio.google.com/apikey](https://aistudio.google.com/apikey) |
 | OpenRouter (free models) | [openrouter.ai/keys](https://openrouter.ai/keys) |
 | Groq | [console.groq.com/keys](https://console.groq.com/keys) |
 | OpenAI | [platform.openai.com/api-keys](https://platform.openai.com/api-keys) |
 | Custom | Any OpenAI-compatible endpoint |
 
-- **Two quality tiers** — Fast (smaller model, instant) and Careful (larger model, better output)
+- **Models pre-configured** — sensible defaults for every provider; override in Settings if you want
 - **API keys stored securely** — macOS Keychain / Windows Credential Manager, never in plain text
 
 ---
@@ -124,30 +123,32 @@ Requirements: Python 3.10–3.13 from [python.org](https://python.org). Python 3
 
 ## Set up an API key
 
-All six providers are free to start. Pick one, grab a key, and paste it into Settings.
-
-### Google AI Studio (easiest free option)
-1. Go to [aistudio.google.com/apikey](https://aistudio.google.com/apikey) and sign in with a Google account
-2. Click **Create API key** → copy it
-3. In Prompt Box: click ⚙ → select **Google AI Studio** → paste the key → **Save**
+Choose a provider and check its current pricing, model access, and limits before use. Defaults are editable starting points, not a guarantee of availability or free access. Prompts are sent to the selected endpoint; only use a provider appropriate for their contents.
 
 ### NVIDIA
+Default models: `meta/llama-3.1-8b-instruct` · `meta/llama-3.3-70b-instruct`
+
 1. Go to [build.nvidia.com](https://build.nvidia.com) and create a free account
 2. Open any model page → click **Get API Key** → copy it
 3. In Prompt Box: click ⚙ → select **NVIDIA** → paste the key → **Save**
 
-### OpenRouter (access to many free models)
-1. Go to [openrouter.ai/keys](https://openrouter.ai/keys) and sign in
-2. Click **Create Key** → copy it
-3. In Prompt Box: click ⚙ → select **OpenRouter** → paste the key → **Save**
-4. Free models are used by default (`nvidia/nemotron-3.5-lightning:free`, `nvidia/nemotron-3-super-120b-a12b:free`)
+### Groq
+Default models: `llama-3.1-8b-instant` · `llama-3.3-70b-versatile`
 
-### Groq (fast inference)
 1. Go to [console.groq.com/keys](https://console.groq.com/keys) and create a free account
 2. Click **Create API Key** → copy it
 3. In Prompt Box: click ⚙ → select **Groq** → paste the key → **Save**
 
+### OpenRouter (access to hundreds of models)
+Default models: `meta/llama-3.1-8b-instruct:free` · `meta/llama-3.3-70b-instruct:free`
+
+1. Go to [openrouter.ai/keys](https://openrouter.ai/keys) and sign in
+2. Click **Create Key** → copy it
+3. In Prompt Box: click ⚙ → select **OpenRouter** → paste the key → **Save**
+
 ### OpenAI
+Default models: `gpt-5-mini` · `gpt-5`
+
 1. Go to [platform.openai.com/api-keys](https://platform.openai.com/api-keys) and sign in
 2. Click **Create new secret key** → copy it (you won't see it again)
 3. In Prompt Box: click ⚙ → select **OpenAI** → paste the key → **Save**
@@ -156,23 +157,13 @@ All six providers are free to start. Pick one, grab a key, and paste it into Set
 For any OpenAI-compatible API (Ollama, LM Studio, local llama.cpp server, etc.):
 1. In Prompt Box: click ⚙ → select **Custom**
 2. Enter the **base URL** (e.g. `http://localhost:11434/v1` for Ollama)
-3. Enter the **model name** for Fast and Careful tiers
-4. Enter the **API key** if your endpoint requires one (leave blank for local servers) → **Save**
+3. Enter the **model name** and optionally an API key → **Save**
 
 > Keys are stored in macOS Keychain or Windows Credential Manager — never in plain text or config files.
 
 ### Rate limits on free tiers
 
-Free APIs cap requests per minute. If you hit the limit, Prompt Box waits 65 seconds and retries automatically — the spinner stays up, you don't need to do anything.
-
-If it happens often, switch to **Groq** — same free tier, much higher limits, and Llama 70B is good at structuring prompts.
-
-| Provider | Free rate limit |
-|---|---|
-| Google AI Studio | ~15 req/min (Gemini Flash), ~2 req/min (Gemini Pro) |
-| Groq | ~30 req/min (Llama 8B / Llama 70B) |
-| OpenRouter | varies by model (`:free` models are shared) |
-| NVIDIA | varies by model |
+On HTTP 429, Prompt Box reports the provider's `Retry-After` value when supplied. It makes **one request per conversion**, with no hidden wait or automatic retry. Wait as advised, then retry manually. Rate limits vary by account and model.
 
 ---
 
@@ -227,7 +218,26 @@ Your rough prompt
        └─── Displayed + ready to copy
 ```
 
-The system prompts enforce specific rules: keep every number, file name, and error text verbatim; delete filler; never add requirements the user didn't mention; output only Markdown with no preamble.
+The system prompts request exact preservation of requirements, negations, uncertainty, code, and literal values. Structure adds no requirements; Build can propose necessary steps and explicitly labeled assumptions. These are instructions to the model, not guarantees.
+
+### Token-conscious workflow
+
+- Send short, clear prompts directly to your agent; formatting them with an LLM adds a request.
+- Use Structure for messy requirements. Use Build only when you want expansion, and review every assumption.
+- Compare the result with the original, especially permissions, exclusions, uncertainty, units, and code. Literal checks cannot establish semantic fidelity.
+- The `~tokens` meter is a characters/4 estimate of the two texts, not a model tokenizer or total cost. Provider-reported conversion input/output usage is shown separately when available; it includes conversion overhead and is not persisted in history.
+- Measure conversion **plus** downstream agent usage and corrections to evaluate savings. Shorter output alone does not establish lower total cost.
+- History stores the initial successful conversion. Edits in the result pane are copied but are not automatically written back to history.
+
+### Offline verification
+
+```bash
+python3 promptbox.py --selftest
+python3 -m unittest discover -s tests -v
+node --test tests/frontend.test.cjs
+```
+
+The regression suite uses temporary files and mocked API/credential calls. It does not spend credits, access stored keys, or verify live provider availability. If a model copies converter directions or hits the output limit, Prompt Box rejects the result without an automatic retry; it shows elapsed time and any reported API usage. Old saved NVIDIA preset model names fall back to the current built-in defaults; custom model names stay unchanged. Structure requests have a length-based output ceiling to stop runaway responses sooner. Literal-detail checks cannot catch every such error. Node is only needed for frontend tests, not to run the app.
 
 ---
 

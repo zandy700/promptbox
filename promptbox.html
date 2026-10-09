@@ -206,6 +206,7 @@ header > * { flex-shrink: 0; }
   white-space: nowrap;
 }
 .stat { color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+#usageStat { flex: none; white-space: normal; overflow-wrap: anywhere; }
 textarea.edit {
   flex: 1; border: 0; resize: none; outline: none; background: transparent;
   padding: 14px 16px; font: 13px/1.6 var(--mono); min-height: 0;
@@ -379,7 +380,7 @@ body.m-panel .card .hint { font-size: 10.5px; }
 body.m-panel .empty { padding: 12px; font-size: 12px; }
 body.m-panel .empty .legend span { font-size: 10.5px; padding: 2px 7px; }
 body.m-panel #checkbar { flex-wrap: wrap; gap: 3px 8px; padding: 6px 9px; border-radius: 10px; }
-body.m-panel .score { min-width: 0; grid-auto-flow: column; align-items: baseline; gap: 5px; }
+body.m-panel .score { min-width: 0; flex: 1; grid-auto-flow: row; align-items: baseline; gap: 2px; }
 body.m-panel .score b, body.m-panel .tokens b { font-size: 12px; }
 body.m-panel .score span { font-size: 10.5px; }
 body.m-panel #chips { order: 3; flex-basis: 100%; max-height: 40px; gap: 4px; }
@@ -538,6 +539,7 @@ dialog::backdrop { background: rgba(18, 16, 42, .45); }
       <div id="chips"></div>
       <div class="tokens"><b id="tokSaved"></b><span id="tokDetail"></span></div>
     </div>
+    <p id="usageStat" class="stat" role="status" style="margin:0 12px 8px" hidden></p>
   </main>
 </div>
 
@@ -589,7 +591,7 @@ const SECTIONS = [
 const MODES = {
   structure: {
     out: "Structured",
-    sub: "Reorganize a prompt you already wrote. Nothing added, nothing lost.",
+    sub: "Reorganize your prompt. Review the result for omissions before copying.",
     placeholder: "Paste or type your prompt the way you'd normally write it.\n\nThen press ⌘↩ to convert.",
     legend: [["Goal", "goal"], ["Context", "context"], ["Constraints", "constraints"],
       ["Out of scope", "scope"], ["Done when", "done"], ["Open questions", "questions"]],
@@ -604,7 +606,7 @@ const MODES = {
     longer: "var(--muted)",   // a build prompt is meant to be longer than the idea
   },
 };
-const HINTS = { assumptions: "Decisions you didn't state. The agent will follow them, so check each one." };
+const HINTS = { assumptions: "Proposals you didn't state. Review or remove each one before sending." };
 const ICON_EXPAND = '<path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7"/>';
 const ICON_SHRINK = '<path d="M4 14h6v6M20 10h-6V4M14 10l7-7M3 21l7-7"/>';
 
@@ -629,15 +631,16 @@ const esc = s => s.replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&
 const inline = s => esc(s).replace(/`([^`]+)`/g, "<code>$1</code>").replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
 
 function renderBlock(lines) {
-  let html = "", list = null, fence = null;
+  let html = "", list = null, fence = null, marker = null;
   const close = () => { if (list) { html += `</${list}>`; list = null; } };
   for (const line of lines) {
     if (fence !== null) {
-      if (/^\s*```/.test(line)) { html += `<pre><code>${esc(fence.join("\n"))}</code></pre>`; fence = null; }
+      if (closesFence(line, marker)) { html += `<pre><code>${esc(fence.join("\n"))}</code></pre>`; fence = null; marker = null; }
       else fence.push(line);
       continue;
     }
-    if (/^\s*```/.test(line)) { close(); fence = []; continue; }
+    const opening = fenceMarker(line);
+    if (opening) { close(); fence = []; marker = opening; continue; }
     const h4 = line.match(/^#{3,6}\s+(.*)/);
     if (h4) { close(); html += `<h4>${inline(h4[1])}</h4>`; continue; }
     const ul = line.match(/^(\s*)[-*•]\s+(.*)/), ol = line.match(/^(\s*)\d+[.)]\s+(.*)/);
@@ -656,12 +659,22 @@ function renderBlock(lines) {
   return html;
 }
 
+const fenceMarker = line => (line.match(/^\s*(`{3,}|~{3,})/) || [])[1];
+const closesFence = (line, marker) => new RegExp(`^\\s*${marker[0]}{${marker.length},}\\s*$`).test(line);
+
 function render(md) {
   const pv = $("#preview");
   if (!md.trim()) { pv.innerHTML = emptyHTML(); return; }
   const parts = [];
-  let cur = { title: null, lines: [] };
+  let cur = { title: null, lines: [] }, fence = null;
   for (const line of md.split("\n")) {
+    if (fence) {
+      cur.lines.push(line);
+      if (closesFence(line, fence)) fence = null;
+      continue;
+    }
+    const opening = fenceMarker(line);
+    if (opening) { fence = opening; cur.lines.push(line); continue; }
     const h = line.match(/^#{1,2}\s+(.*)/);   // ### stays inside the card as a subheading
     if (h) { if (cur.title || cur.lines.some(l => l.trim())) parts.push(cur); cur = { title: h[1].replace(/:$/, ""), lines: [] }; }
     else cur.lines.push(line);
@@ -682,6 +695,7 @@ const skeleton = () => ["goal", "constraints", "done"].map(k =>
   `<div class="skel" style="--c:var(--${k})"></div>`).join("");
 
 function setMode(mode) {
+  if (state.busy) return;
   state.mode = mode;
   const m = MODES[mode];
   document.querySelectorAll("[data-mode]").forEach(b => b.setAttribute("aria-pressed", b.dataset.mode === mode));
@@ -711,9 +725,9 @@ function showCheck(details) {
   const score = $("#score");
   score.className = "score " + (lost.length ? "miss" : "good");
   score.querySelector("b").textContent = !details.length ? "Nothing to check"
-    : lost.length ? `${lost.length} missing` : `All ${details.length} kept`;
+    : lost.length ? `${lost.length} missing` : `${details.length} literals found`;
   score.querySelector("span").textContent = !details.length ? "no names, numbers or paths found"
-    : lost.length ? `of ${details.length} details` : "names, numbers, paths, code";
+    : lost.length ? `of ${details.length} literals; review meaning too` : "Meaning and completeness still need review";
   $("#chips").innerHTML = [...lost.map(d => `<span class="chip lost" title="Not found in the result">✕ ${esc(d.item)}</span>`),
     ...kept.map(d => `<span class="chip kept">✓ ${esc(d.item)}</span>`)].join("");
   $("#chips").hidden = !details.length;
@@ -723,7 +737,7 @@ function showCheck(details) {
     const t = $("#tokSaved");
     t.textContent = pct >= 0 ? `${pct}% shorter` : `${-pct}% longer`;
     t.style.color = pct >= 0 ? "var(--ok)" : MODES[state.mode].longer;
-    $("#tokDetail").textContent = `~${a} → ~${b} tokens`;
+    $("#tokDetail").textContent = `~${a} → ~${b} tokens (text estimate only)`;
   } else { $("#tokSaved").textContent = ""; $("#tokDetail").textContent = ""; }
 }
 
@@ -738,38 +752,62 @@ function setOutput(md, details) {
 }
 
 /* ---------- actions ---------- */
+function setBusy(busy) {
+  state.busy = busy;
+  document.querySelectorAll('#convert, #copyBtn, #clearBtn, #newBtn, #providerBtn, #keyBarBtn, [data-mode], [data-model], #history button').forEach(b => b.disabled = busy);
+  $("#src").readOnly = busy;
+  $("#raw").readOnly = busy;
+  $("#convert").classList.toggle("busy", busy);
+  if (!busy) $("#copyBtn").disabled = !state.md.trim();
+}
+
+function showUsage(result) {
+  const el = $("#usageStat"), u = result.usage || {};
+  el.hidden = false;
+  const elapsed = Number.isFinite(result.elapsed_seconds) ? `${result.elapsed_seconds.toFixed(1)}s · ` : "";
+  el.textContent = elapsed + (Number.isInteger(u.prompt_tokens) && Number.isInteger(u.completion_tokens)
+    ? `Conversion API: ${u.prompt_tokens} input + ${u.completion_tokens} output tokens · ${result.model}`
+    : "Conversion API usage not reported by provider.");
+}
+
 async function convert() {
+  if (state.busy || $("#settings").open) return;
   const prompt = $("#src").value.trim();
   if (!prompt) { toast("Paste a prompt first", true); $("#src").focus(); return; }
-  if (state.busy) return;
-  state.busy = true;
-  const btn = $("#convert");
-  btn.disabled = true; btn.classList.add("busy");
+  clearTimeout(checkTimer);
+  setBusy(true);
+  $("#usageStat").hidden = true;
   setView("preview");
   hasOut(true);
   $("#preview").innerHTML = skeleton();
   $("#checkbar").classList.remove("show");
-  const r = await api().convert(prompt, state.model, state.mode);
-  state.busy = false; btn.disabled = false; btn.classList.remove("busy");
-  if (!r.ok) {
-    setOutput(state.md, null);
-    const inPanel = document.body.classList.contains("m-panel");
-    toast(inPanel && /Settings/.test(r.error) ? r.error.replace(/Open Settings.*$/, "Expand ⤢ to set it up.") : r.error, true);
-    if (/key|Settings/i.test(r.error)) refreshStatus();
-    return;
+  try {
+    const r = await api().convert(prompt, state.model, state.mode);
+    showUsage(r);
+    if (!r.ok) throw new Error(r.error);
+    state.current = r.id;
+    setOutput(r.md, r.details);
+    if (r.warning) toast(r.warning, true);
+    try { await loadHistory(); } catch { toast("Converted; history list could not be refreshed.", true); }
+  } catch (err) {
+    render(state.md);
+    hasOut(!!state.md.trim());
+    toast(err.message || "Conversion failed. Try again.", true);
+  } finally {
+    setBusy(false);
   }
-  state.current = r.id;
-  setOutput(r.md, r.details);
-  loadHistory();
 }
 
 async function copy() {
-  if (!state.md.trim()) return;
+  if (state.busy || !state.md.trim()) return;
   await api().copy(state.md);
   toast("Copied. Paste it into your agent.");
 }
 
 function clearAll() {
+  if (state.busy) return;
+  clearTimeout(checkTimer);
+  $("#usageStat").hidden = true;
   $("#src").value = ""; updateSrcStat();
   state.current = null;
   setOutput("", []);
@@ -785,12 +823,23 @@ function setView(v) {
 }
 
 let checkTimer;
+function scheduleCheck() {
+  clearTimeout(checkTimer);
+  $("#checkbar").classList.remove("show");
+  if (state.busy || !state.md.trim()) return;
+  const original = $("#src").value, md = state.md;
+  checkTimer = setTimeout(async () => {
+    try {
+      const details = await api().check(original, md);
+      if (!state.busy && original === $("#src").value && md === state.md) showCheck(details);
+    } catch { toast("Detail check unavailable; review the text manually.", true); }
+  }, 300);
+}
 $("#raw").addEventListener("input", () => {
   state.md = $("#raw").value;
   render(state.md);
   $("#copyBtn").disabled = !state.md.trim();
-  clearTimeout(checkTimer);
-  checkTimer = setTimeout(async () => showCheck(await api().check($("#src").value, state.md)), 300);
+  scheduleCheck();
 });
 
 /* ---------- history ---------- */
@@ -817,14 +866,20 @@ function markCurrent() {
 }
 
 $("#history").addEventListener("click", async e => {
+  if (state.busy) return;
   const b = e.target.closest("button[data-id]");
   if (!b) return;
+  setBusy(true);
+  try {
   const r = await api().load(b.dataset.id);
+  $("#usageStat").hidden = true;
   state.current = b.dataset.id;
   $("#src").value = r.original; updateSrcStat();
   setOutput(r.md, r.details);
   markCurrent();
   document.body.classList.remove("show-history");
+  } catch { toast("This history entry could not be loaded.", true); }
+  finally { setBusy(false); }
 });
 
 /* ---------- provider status + settings ---------- */
@@ -842,6 +897,7 @@ async function refreshStatus() {
 let provs = [], sel = null;
 
 async function openSettings() {
+  if (state.busy) return;
   if (document.body.classList.contains("m-panel")) {   // too cramped in the corner; use the full view
     setSize("full");
     await new Promise(r => setTimeout(r, 280));
@@ -860,7 +916,7 @@ function drawProviders() {
     ${p.active ? '<span class="tag use">In use</span>' : ""}</span></button></li>`).join("");
   const p = provs.find(x => x.id === sel);
   $("#pKey").value = "";
-  $("#pKey").placeholder = p.has_key ? "Saved in Keychain. Paste a new key to replace it." : `Paste your ${p.name} API key`;
+  $("#pKey").placeholder = p.has_key ? "Saved in credential store. Paste a new key to replace it." : p.id === "custom" ? "Optional for a local endpoint" : `Paste your ${p.name} API key`;
   $("#pGet").hidden = !p.keys;
   $("#pBase").value = p.base;
   $("#pBase").disabled = p.id !== "custom";
@@ -888,6 +944,7 @@ function toast(msg, err = false) {
 
 /* ---------- wiring ---------- */
 document.querySelectorAll("[data-model]").forEach(b => b.addEventListener("click", () => {
+  if (state.busy) return;
   state.model = b.dataset.model;
   document.querySelectorAll("[data-model]").forEach(x => x.setAttribute("aria-pressed", x === b));
 }));
@@ -899,7 +956,7 @@ $("#clearBtn").addEventListener("click", clearAll);
 $("#newBtn").addEventListener("click", clearAll);
 $("#folderBtn").addEventListener("click", () => api().open_folder());
 $("#quitBtn").addEventListener("click", () => api().quit());
-$("#src").addEventListener("input", updateSrcStat);
+$("#src").addEventListener("input", () => { updateSrcStat(); scheduleCheck(); });
 
 /* drag the window by its title bar (buttons excluded) */
 let drag = null;
